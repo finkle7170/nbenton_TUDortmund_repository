@@ -1,0 +1,12 @@
+Hello. This is a little note area for me to keep track of the parameters for my data files.
+
+0-78. SIBYLL2.3C on the old version, 0-78.5degrees avg 15 bins (= in cos). No Helicities
+1. SIBYLL2.3C   0-78.5degrees avg 15 bins (= in cos). Added  Tau,Unflav,LambdaC. No helicites
+2. SIBYLL2.3D   0-78.5degrees avg 15 bins (= in cos). Added "                 " With Helicities
+3. QGSJETII04   0-90degrees avg 15 bins (= in cos). Added "                 ". With helicites
+4. SIBYLL2.3C   0-90degrees avg 15 bins (= in cos). Added "                 ". With helicites
+
+FishPlot_data1. SIBYLL2.3d Choses cos(theta) = 0.1,0.5,0.9. Takes 21 angular bins and makes an average to then divide 
+                desired particles (either numu, nue, nutau, or mu) into ratios for fish plots.
+                Plots 6 ratios, 3 angles with and without prompt decays
+FishPlot_data2  Same as above except it does not use the new tables Anatoli sent, simulated with SIBYLL2.3c

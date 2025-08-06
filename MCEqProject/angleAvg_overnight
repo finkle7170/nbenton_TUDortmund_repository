@@ -1,0 +1,315 @@
+'''This is a .py version of variable_angle+particle intended to be run overnight on a screen.
+MCEq sims with the new tables found in mceq_db_fine_v150.h5 take a lot longer to run (~3 hours) so this is necessary
+'''
+
+#basic imports and ipython setup
+import os
+import sys
+
+import matplotlib.pyplot as plt
+from matplotlib import gridspec
+import numpy as np
+
+sys.path.append('../MCEq')
+os.chdir('..')
+
+#import solver related modules
+#import primary model choices
+import crflux.models as pm
+
+from MCEq.core import MCEqRun
+#from MCEq import config
+import MCEq.config as config
+from MCEq.particlemanager import MCEqParticle
+
+#Steer MCEq to the new H5 file and chose the decay database
+config.mceq_db_fname = "mceq_db_fine_v150.h5"
+config.decay_db_name = "full_decays" #or "pythia_decays_K3b_202206"
+config.muon_helicity_dependence = True         
+
+#Initialize MCEq Run
+mceq_run = MCEqRun(
+interaction_medium = 'air',
+#provide the string of the interaction model
+interaction_model='EPOSLHC',
+#primary cosmic ray flux model
+#support a tuple (primary model class (not instance!), arguments)
+primary_model=(pm.HillasGaisser2012, 'H3a'),
+# Zenith angle in degrees. 0=vertical, 90=horizontal
+theta_deg=78.5,
+#expand the rest of the options from mceq_config.py
+#**config
+)
+mceq_run.set_density_model(('MSIS00_IC', ('SouthPole', "October")))
+mag = 3
+pman = mceq_run.pman
+
+# Re-apply the appropriate databases, hopefully initializes the tables for our added particles
+pman.set_cross_sections_db(mceq_run._int_cs)
+pman.set_decay_channels(mceq_run._decays)
+pman.set_interaction_model(mceq_run._int_cs, mceq_run._interactions)
+
+def average_over_angles(
+    mceq_run,
+    mag,
+    min_angle_deg,
+    max_angle_deg,
+    bins=5,
+):
+    """
+    Run MCEq for equally-spaced cos θ bins, then return angle-averaged spectra.
+
+    The routine performs **two** passes over the angle grid:
+
+    1.  First loop solves only for the conventional, prompt, total,
+        and pion-decay μ spectra. The prompt component gets messed up
+        at higher energies for reasons unknown if tracking particles
+        are added beforehand.
+
+    2.  Second loop registers the parent→lepton tracking just once,
+        rebuilds the matrices, and solves again for every parent group
+        specified in ``parent_groups``.
+
+    Parameters
+    ----------
+    mceq_run : mceq.core.MCEqRun
+        A fully configured MCEqRun instance.
+    mag : int | slice | ndarray
+        Energy-bin selector you normally pass to ``get_solution``.
+    min_angle_deg, max_angle_deg : float
+        Angular bounds (zenith, in degrees). 0° = downgoing.
+    bins : int, optional
+        Number of angular sub-bins. Default is 5.
+
+    Returns
+    -------
+    primary_fluxes : dict
+        Keys ``mu_conv`` … ``nutau_total`` and ``pi_mu`` – each is the
+        **angle-averaged** spectrum.
+    parent_fluxes : dict
+        ``parent_fluxes[flavour][parent_label]`` – angle-averaged spectra
+        for every tracked parent.  Flavours are ``'mu'``, ``'numu'``,
+        ``'nue'`` and ``'nutau'``.
+    zenith_midpoints : ndarray
+        Mid-point zenith angles (°) actually simulated.
+    """
+
+    # Build the zenith bins
+    cos_edges = np.linspace(
+        np.cos(np.deg2rad(max_angle_deg)),
+        np.cos(np.deg2rad(min_angle_deg)),
+        bins + 1,
+    )
+    zenith_edges_deg = np.degrees(np.arccos(cos_edges))
+    zenith_midpoints = 0.5 * (zenith_edges_deg[:-1] + zenith_edges_deg[1:])
+
+    mceq_run.set_density_model(("MSIS00_IC", ("SouthPole", "April")))
+
+    # initialize containers for the first pass
+    mu_conv_list, numu_conv_list, nue_conv_list = [], [], []
+    mu_prompt_list, numu_prompt_list, nue_prompt_list = [], [], []
+    mu_total_list, numu_total_list, nue_total_list, nutau_total_list = [], [], [], []
+    pi_mu_list = []
+
+    # 2. FIRST PASS (no hadrons-tracking)
+    for zenith in zenith_midpoints:
+        mceq_run.set_theta_deg(float(zenith))
+        mceq_run.solve()
+
+        # --- Conventional component
+        mu_conv_list.append(
+            mceq_run.get_solution("conv_mu+", mag)
+            + mceq_run.get_solution("conv_mu-", mag)
+        )
+        numu_conv_list.append(
+            mceq_run.get_solution("conv_numu", mag)
+            + mceq_run.get_solution("conv_antinumu", mag)
+        )
+        nue_conv_list.append(
+            mceq_run.get_solution("conv_nue", mag)
+            + mceq_run.get_solution("conv_antinue", mag)
+        )
+
+        # --- Prompt component
+        mu_prompt_list.append(
+            mceq_run.get_solution("pr_mu+", mag)
+            + mceq_run.get_solution("pr_mu-", mag)
+        )
+        numu_prompt_list.append(
+            mceq_run.get_solution("pr_numu", mag)
+            + mceq_run.get_solution("pr_antinumu", mag)
+        )
+        nue_prompt_list.append(
+            mceq_run.get_solution("pr_nue", mag)
+            + mceq_run.get_solution("pr_antinue", mag)
+        )
+
+        # --- Total component
+        mu_total_list.append(
+            mceq_run.get_solution("total_mu+", mag)
+            + mceq_run.get_solution("total_mu-", mag)
+        )
+        numu_total_list.append(
+            mceq_run.get_solution("total_numu", mag)
+            + mceq_run.get_solution("total_antinumu", mag)
+        )
+        nue_total_list.append(
+            mceq_run.get_solution("total_nue", mag)
+            + mceq_run.get_solution("total_antinue", mag)
+        )
+        nutau_total_list.append(
+            mceq_run.get_solution("total_nutau", mag)
+            + mceq_run.get_solution("total_antinutau", mag)
+        )
+
+        # Pion->muon decay, add this manually bc MCEq already
+        #  calculates this flux without added tracking
+        pi_mu_list.append(
+            mceq_run.get_solution("pi_mu+_l", mag)
+            + mceq_run.get_solution("pi_mu+_r", mag)
+            + mceq_run.get_solution("pi_mu-_l", mag)
+            + mceq_run.get_solution("pi_mu-_r", mag)
+        )
+
+    # Average the primary spectra
+    primary_fluxes = {
+        "mu_conv":   np.mean(mu_conv_list,   axis=0),
+        "numu_conv": np.mean(numu_conv_list, axis=0),
+        "nue_conv":  np.mean(nue_conv_list,  axis=0),
+        "mu_prompt":   np.mean(mu_prompt_list,   axis=0),
+        "numu_prompt": np.mean(numu_prompt_list, axis=0),
+        "nue_prompt":  np.mean(nue_prompt_list,  axis=0),
+        "mu_total":   np.mean(mu_total_list,   axis=0),
+        "numu_total": np.mean(numu_total_list, axis=0),
+        "nue_total":  np.mean(nue_total_list,  axis=0),
+        "nutau_total": np.mean(nutau_total_list, axis=0),
+        "pi_mu": np.mean(pi_mu_list, axis=0),
+    }
+
+
+    # 3. Register the parent→lepton tracking ONCE
+    _register_parents_for_tracking(mceq_run)
+
+    # Containers for the second pass
+    parent_groups = (
+        "Dpm", "D0", "Ds", "Kpm", "K0s", "K0L",
+        "Pion", "Muon", "Tau", "Unflavored", "LambdaC"
+    )
+    parent_fluxes = {
+        flavour: {parent: [] for parent in parent_groups}
+        for flavour in ("mu", "numu", "nue", "nutau")
+    }
+
+
+    # 4. SECOND PASS – with parent-tracking
+    for zenith in zenith_midpoints:
+        mceq_run.set_theta_deg(float(zenith))
+        mceq_run.solve()
+
+        for parent in parent_groups:
+            parent_fluxes["mu"][parent].append(
+                mceq_run.get_solution(f"{parent}_mu-", mag)
+                + mceq_run.get_solution(f"{parent}_mu+", mag)
+            )
+            parent_fluxes["numu"][parent].append(
+                mceq_run.get_solution(f"{parent}_numu", mag)
+                + mceq_run.get_solution(f"{parent}_antinumu", mag)
+            )
+            parent_fluxes["nue"][parent].append(
+                mceq_run.get_solution(f"{parent}_nue", mag)
+                + mceq_run.get_solution(f"{parent}_antinue", mag)
+            )
+            parent_fluxes["nutau"][parent].append(
+                mceq_run.get_solution(f"{parent}_nutau", mag)
+                + mceq_run.get_solution(f"{parent}_antinutau", mag)
+            )
+
+        # Add the special π± → μ± helicity tracks to the Pion entry
+        parent_fluxes["mu"]["Pion"][-1] += (
+            mceq_run.get_solution("pi_mu+_l", mag)
+            + mceq_run.get_solution("pi_mu+_r", mag)
+            + mceq_run.get_solution("pi_mu-_l", mag)
+            + mceq_run.get_solution("pi_mu-_r", mag)
+        )
+
+    # Average the parent-tracked spectra
+    for flavour in parent_fluxes:
+        for parent in parent_fluxes[flavour]:
+            parent_fluxes[flavour][parent] = np.mean(
+                parent_fluxes[flavour][parent], axis=0
+            )
+
+    return primary_fluxes, parent_fluxes, zenith_midpoints
+
+
+# ----------------------------------------------------------------------
+# Helper – register parents once and rebuild matrices
+def _register_parents_for_tracking(mceq_run):
+    """
+    Declare all parent→lepton tracking only on the first call.
+    """
+    if getattr(mceq_run.pman, "_parents_registered", False):
+        return
+
+    parent_groups = [
+        ([(411, 0), (-411, 0)], "Dpm"),
+        ([(421, 0), (-421, 0)], "D0"),
+        ([(431, 0), (-431, 0)], "Ds"),
+        ([(321, 0), (-321, 0)], "Kpm"),
+        ([(310, 0)], "K0s"),
+        ([(130, 0)], "K0L"),
+        ([(211, 0), (-211, 0)], "Pion"),
+        ([(4122, 0), (-4122, 0)], 'LambdaC'),               # Lambda_c+ and anti-Lambda_c
+        ([(111, 0), (221, 0), (331, 0), (221,0), (223,0), (333,0)], 'Unflavoured'),    # π0, η, η′, eta, omega, phi
+        ([(15, 0), (-15, 0),(15, -1), (-15, -1),(15, 1), (-15, 1)], 'Tau'),  # Tau+ and Tau-
+        ([(13, 0), (-13, 0), (13, 1), 
+          (-13, 1), (13, -1), (-13, -1),],"Muon"),
+    ]
+
+    for pdg_list, label in parent_groups:
+        mceq_run.pman.track_leptons_from(
+            parent_pdg_list=pdg_list,
+            prefix=f"{label}_",
+            exclude_em=True,
+            use_helicities=False,
+        )
+
+    mceq_run._resize_vectors_and_restore()
+    mceq_run.regenerate_matrices()
+    mceq_run.pman._parents_registered = True
+
+
+#define conditions for function call
+run = 2
+MIN_ZENITH_DEG = 0     # lower edge of the zenith bin (degrees)
+MAX_ZENITH_DEG = 78.5    # upper edge of the zenith bin (degrees)
+
+#Call the function
+primary, parents, zeniths = average_over_angles(mceq_run,3,MIN_ZENITH_DEG,MAX_ZENITH_DEG,bins=15)
+
+# Helper 1 – save a run to disk
+def save_angle_average(outfile: str, primary, parents, zeniths):
+    """
+    Compress-serialise (primary, parents, zeniths) → outfile (.pkl.gz).
+    """
+    import gzip, pickle, pathlib
+
+    outfile = pathlib.Path(outfile).with_suffix(".pkl.gz")
+    outfile.parent.mkdir(parents=True, exist_ok=True)
+
+    with gzip.open(outfile, "wb") as fh:
+        pickle.dump(
+            {"primary": primary,
+             "parents": parents,
+             "zeniths": zeniths},
+            fh,
+            protocol=pickle.HIGHEST_PROTOCOL,
+        )
+    print(f"[MCEq] Results written → {outfile}")
+
+save_angle_average(
+    outfile = f"angleAvg_{run}",
+    primary = primary,
+    parents = parents,
+    zeniths = zeniths,
+)
